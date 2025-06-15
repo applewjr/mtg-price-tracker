@@ -5,15 +5,13 @@ from snowflake.snowpark import Session
 import pandas as pd
 import hashlib
 
-# Cache the session creation to avoid repeated connections
-@st.cache_resource
+# Create fresh Snowflake session on-demand (no caching!)
 def get_snowflake_session():
-    """Create and cache Snowflake session"""
+    """Create fresh Snowflake session on-demand"""
     try:
         session = get_active_session()
         return session, "Connected using active Snowflake session"
     except:
-        # Create session manually using secrets
         try:
             connection_parameters = {
                 "account": st.secrets["snowflake"]["account"],
@@ -57,7 +55,21 @@ def get_card_prices(card_id):
         st.error(f"Error querying data: {str(e)}")
         return pd.DataFrame()
 
-# Initialize session
+# Cache view data for 24 hours
+@st.cache_data(ttl=86400)  # Cache for 24 hours
+def get_price_after_launch():
+    """Get price after launch data and cache results"""
+    session, _ = get_snowflake_session()
+    try:
+        query = "SELECT * FROM price_after_launch"
+        result = session.sql(query)
+        df = result.to_pandas()
+        return df
+    except Exception as e:
+        st.error(f"Error querying price after launch data: {str(e)}")
+        return pd.DataFrame()
+
+# Initialize session for display message
 session, connection_message = get_snowflake_session()
 st.success(connection_message)
         
@@ -75,9 +87,9 @@ with st.expander("ℹ️ Cache Information"):
     **Caching Strategy:**
     - Card searches: Cached for 24 hours
     - Price data: Cached for 24 hours (updates once daily)
-    - Session: Cached until app restart
+    - Sessions: Fresh connections on-demand
     
-    This minimizes Snowflake compute costs since data updates once per day.
+    This minimizes Snowflake compute costs while ensuring reliability.
     """)
 
 # Card Search Section
@@ -86,18 +98,20 @@ st.write("Search for cards to get their UUID for price tracking")
 
 col1, col2 = st.columns(2)
 with col1:
-    search_term1 = st.text_input(
+    search_term1_raw = st.text_input(
         "First search term", 
         value="vivi",
         help="Enter part of the card name"
     )
+    search_term1 = search_term1_raw.lower()
 
 with col2:
-    search_term2 = st.text_input(
+    search_term2_raw = st.text_input(
         "Second search term", 
         value="final fantasy",
         help="Enter additional search criteria"
     )
+    search_term2 = search_term2_raw.lower()
 
 # Add cache control
 col1, col2 = st.columns([3, 1])
@@ -230,20 +244,6 @@ if card_id:
 
 else:
     st.info("Please enter a card ID to view price data.")
-
-# Cache view data for 24 hours
-@st.cache_data(ttl=86400)  # Cache for 24 hours
-def get_price_after_launch():
-    """Get price after launch data and cache results"""
-    session, _ = get_snowflake_session()
-    try:
-        query = "SELECT * FROM price_after_launch"
-        result = session.sql(query)
-        df = result.to_pandas()
-        return df
-    except Exception as e:
-        st.error(f"Error querying price after launch data: {str(e)}")
-        return pd.DataFrame()
 
 st.divider()  # Visual separator
 
