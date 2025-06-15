@@ -231,6 +231,61 @@ if card_id:
 else:
     st.info("Please enter a card ID to view price data.")
 
+# Cache view data for 24 hours
+@st.cache_data(ttl=86400)  # Cache for 24 hours
+def get_price_after_launch():
+    """Get price after launch data and cache results"""
+    session, _ = get_snowflake_session()
+    try:
+        query = "SELECT * FROM price_after_launch"
+        result = session.sql(query)
+        df = result.to_pandas()
+        return df
+    except Exception as e:
+        st.error(f"Error querying price after launch data: {str(e)}")
+        return pd.DataFrame()
+
+st.divider()  # Visual separator
+
+# Price After Launch Analysis Section
+st.subheader("📊 Average Price of Mythic and Rare Cards Per Set")
+st.write("Track how card prices evolve over the first 300 days after set release")
+
+with st.spinner("Loading price analysis data..."):
+    launch_df = get_price_after_launch()
+
+if not launch_df.empty:
+    # Prepare data for chart (pivot to get sets as separate series)
+    chart_data = launch_df.pivot(index='DATE_DIFF', columns='SET_NAME', values='AVG_USD')
+    
+    # Sort by date_diff for proper line chart
+    chart_data = chart_data.sort_index()
+    
+    # Create the line chart
+    st.line_chart(chart_data, x_label="Days After Launch", y_label="Average USD")
+    
+    # Show summary statistics
+    with st.expander("📈 Price Analysis Summary"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**Sets Tracked:**")
+            sets = launch_df['SET_NAME'].unique()
+            for set_name in sorted(sets):
+                set_data = launch_df[launch_df['SET_NAME'] == set_name]
+                avg_price = set_data['AVG_USD'].mean()
+                st.write(f"- {set_name}: ${avg_price:.2f} avg")
+        
+        with col2:
+            st.write("**Price Trends:**")
+            st.write(f"- Total data points: {len(launch_df):,}")
+            st.write(f"- Date range: 1-300 days after release")
+            st.write(f"- Card types: Mythic & Rare only")
+            st.write(f"- Sets: {len(sets)} expansion sets")
+
+else:
+    st.warning("No price after launch data available.")
+
 # Footer with cache info
 st.markdown("---")
 st.caption("💡 Data cached for 24 hours to minimize costs. Prices update once daily in the database.")
