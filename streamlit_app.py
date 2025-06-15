@@ -37,7 +37,7 @@ def search_cards(search_term1, search_term2):
     """Search for cards and cache results"""
     session, _ = get_snowflake_session()
     try:
-        search_query = f"SELECT * FROM TABLE(MTG_COST.PUBLIC.GET_CARD_ID('{search_term1}', '{search_term2}')) LIMIT 100"
+        search_query = f"SELECT * FROM TABLE(MTG_COST.PUBLIC.GET_CARD_ID('{search_term1}', '{search_term2}')) LIMIT 1000"
         search_result = session.sql(search_query)
         search_df = search_result.to_pandas()
         return search_df
