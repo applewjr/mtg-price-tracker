@@ -3,26 +3,63 @@ import streamlit as st
 from snowflake.snowpark.context import get_active_session
 from snowflake.snowpark import Session
 import pandas as pd
+import hashlib
 
-try:
-    session = get_active_session()
-    st.success("Connected using active Snowflake session")
-except:
-    # Create session manually using secrets
+# Cache the session creation to avoid repeated connections
+@st.cache_resource
+def get_snowflake_session():
+    """Create and cache Snowflake session"""
     try:
-        connection_parameters = {
-            "account": st.secrets["snowflake"]["account"],
-            "user": st.secrets["snowflake"]["user"],
-            "password": st.secrets["snowflake"]["password"],
-            "warehouse": st.secrets["snowflake"]["warehouse"],
-            "database": st.secrets["snowflake"]["database"],
-            "schema": st.secrets["snowflake"]["schema"]
-        }
-        session = Session.builder.configs(connection_parameters).create()
-        st.success("Connected to Snowflake using credentials")
+        session = get_active_session()
+        return session, "Connected using active Snowflake session"
+    except:
+        # Create session manually using secrets
+        try:
+            connection_parameters = {
+                "account": st.secrets["snowflake"]["account"],
+                "user": st.secrets["snowflake"]["user"],
+                "password": st.secrets["snowflake"]["password"],
+                "warehouse": st.secrets["snowflake"]["warehouse"],
+                "database": st.secrets["snowflake"]["database"],
+                "schema": st.secrets["snowflake"]["schema"]
+            }
+            session = Session.builder.configs(connection_parameters).create()
+            return session, "Connected to Snowflake using credentials"
+        except Exception as e:
+            st.error(f"Failed to connect to Snowflake: {e}")
+            st.stop()
+
+# Cache card search results for 24 hours (card database is relatively static)
+@st.cache_data(ttl=86400)  # Cache for 24 hours
+def search_cards(search_term1, search_term2):
+    """Search for cards and cache results"""
+    session, _ = get_snowflake_session()
+    try:
+        search_query = f"SELECT * FROM TABLE(MTG_COST.PUBLIC.GET_CARD_ID('{search_term1}', '{search_term2}')) LIMIT 100"
+        search_result = session.sql(search_query)
+        search_df = search_result.to_pandas()
+        return search_df
     except Exception as e:
-        st.error(f"Failed to connect to Snowflake: {e}")
-        st.stop()
+        st.error(f"Error searching cards: {str(e)}")
+        return pd.DataFrame()
+
+# Cache price data for 24 hours (prices only update once per day)
+@st.cache_data(ttl=86400)  # Cache for 24 hours
+def get_card_prices(card_id):
+    """Get card price data and cache results"""
+    session, _ = get_snowflake_session()
+    try:
+        query = f"SELECT * FROM TABLE(MTG_COST.PUBLIC.GET_CARD_PRICES('{card_id}'))"
+        result = session.sql(query)
+        df = result.to_pandas()
+        return df
+    except Exception as e:
+        st.error(f"Error querying data: {str(e)}")
+        return pd.DataFrame()
+
+# Initialize session
+session, connection_message = get_snowflake_session()
+st.success(connection_message)
         
 # Write directly to the app
 st.title("MTG Card Price Tracker 🃏")
@@ -32,8 +69,16 @@ st.write(
     """
 )
 
-# Get the current credentials
-session = get_active_session()
+# Cache status indicator
+with st.expander("ℹ️ Cache Information"):
+    st.write("""
+    **Caching Strategy:**
+    - Card searches: Cached for 24 hours
+    - Price data: Cached for 24 hours (updates once daily)
+    - Session: Cached until app restart
+    
+    This minimizes Snowflake compute costs since data updates once per day.
+    """)
 
 # Card Search Section
 st.subheader("🔍 Find Card ID")
@@ -43,37 +88,44 @@ col1, col2 = st.columns(2)
 with col1:
     search_term1 = st.text_input(
         "First search term", 
-        value="vaan",
+        value="vivi",
         help="Enter part of the card name"
     )
 
 with col2:
     search_term2 = st.text_input(
         "Second search term", 
-        value="final",
+        value="final fantasy",
         help="Enter additional search criteria"
     )
 
-if st.button("Search Cards") or (search_term1 and search_term2):
-    try:
-        # Execute the card search query
-        search_query = f"SELECT * FROM TABLE(MTG_COST.PUBLIC.GET_CARD_ID('{search_term1}', '{search_term2}')) LIMIT 100"
-        search_result = session.sql(search_query)
-        search_df = search_result.to_pandas()
+# Add cache control
+col1, col2 = st.columns([3, 1])
+with col1:
+    search_button = st.button("Search Cards")
+with col2:
+    if st.button("🔄 Clear Cache"):
+        st.cache_data.clear()
+        st.success("Cache cleared!")
+        st.rerun()
+
+if search_button or (search_term1 and search_term2):
+    # Show cache status
+    cache_key = f"{search_term1}_{search_term2}"
+    
+    with st.spinner("Searching for cards..."):
+        search_df = search_cards(search_term1, search_term2)
         
-        if not search_df.empty:
-            st.write(f"Found {len(search_df)} cards:")
-            
-            # Make the dataframe interactive - user can click to copy card ID
-            st.dataframe(search_df, use_container_width=True)
-            
-            # Show instruction for copying card ID
-            st.info("💡 Copy a card ID from the table above to use in the price tracker below")
-        else:
-            st.warning("No cards found matching your search terms.")
-            
-    except Exception as e:
-        st.error(f"Error searching cards: {str(e)}")
+    if not search_df.empty:
+        st.write(f"Found {len(search_df)} cards:")
+        
+        # Make the dataframe interactive - user can click to copy card ID
+        st.dataframe(search_df, use_container_width=True)
+        
+        # Show instruction for copying card ID
+        st.info("💡 Copy a card ID from the table above to use in the price tracker below")
+    else:
+        st.warning("No cards found matching your search terms.")
 
 st.divider()  # Visual separator
 
@@ -83,68 +135,62 @@ st.subheader("📈 Card Price Tracker")
 # Card ID input (you can make this dynamic later)
 card_id = st.text_input(
     "Card ID", 
-    value="883c6111-c921-4cd6-930d-4fa335ef2871",
+    value="ecc1027a-8c07-44a0-bdde-fa2844cff694",
     help="Enter the card UUID to track price history (use search above to find card IDs)"
 )
 
 if card_id:
-    try:
-        # Execute the query using the card ID
-        query = f"SELECT * FROM TABLE(MTG_COST.PUBLIC.GET_CARD_PRICES('{card_id}'))"
-        result = session.sql(query)
+    with st.spinner("Loading price data..."):
+        df = get_card_prices(card_id)
+    
+    if not df.empty:
+        # Convert PULL_DATE to datetime if it's not already
+        df['PULL_DATE'] = pd.to_datetime(df['PULL_DATE'])
         
-        # Convert to pandas dataframe
-        df = result.to_pandas()
+        # Sort by date for proper line chart
+        df = df.sort_values('PULL_DATE')
         
-        if not df.empty:
-            # Convert PULL_DATE to datetime if it's not already
-            df['PULL_DATE'] = pd.to_datetime(df['PULL_DATE'])
-            
-            # Sort by date for proper line chart
-            df = df.sort_values('PULL_DATE')
-            
-            # Display current prices
-            latest_data = df.iloc[-1]
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.metric(
-                    "Latest Regular Price", 
-                    f"${latest_data['USD']:.2f}" if pd.notna(latest_data['USD']) else "N/A"
-                )
-            
-            with col2:
-                st.metric(
-                    "Latest Foil Price", 
-                    f"${latest_data['USD_FOIL']:.2f}" if pd.notna(latest_data['USD_FOIL']) else "N/A"
-                )
-            
-            with col3:
-                st.metric(
-                    "Last Updated", 
-                    latest_data['PULL_DATE'].strftime('%Y-%m-%d')
-                )
-            
-            # Price trend chart
-            st.subheader("Price Trends Over Time")
-            
-            # Prepare data for chart
-            chart_data = df.set_index('PULL_DATE')[['USD', 'USD_FOIL']].rename(columns={
-                'USD': 'Regular Price',
-                'USD_FOIL': 'Foil Price'
-            })
-            
-            # Remove rows where both prices are null
-            chart_data = chart_data.dropna(how='all')
-            
-            if not chart_data.empty:
-                st.line_chart(chart_data)
-            else:
-                st.warning("No price data available for charting.")
-            
-            # Raw data table
-            st.subheader("Price History Data")
-            
+        # Display current prices
+        latest_data = df.iloc[-1]
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric(
+                "Latest Regular Price", 
+                f"${latest_data['USD']:.2f}" if pd.notna(latest_data['USD']) else "N/A"
+            )
+        
+        with col2:
+            st.metric(
+                "Latest Foil Price", 
+                f"${latest_data['USD_FOIL']:.2f}" if pd.notna(latest_data['USD_FOIL']) else "N/A"
+            )
+        
+        with col3:
+            st.metric(
+                "Last Updated", 
+                latest_data['PULL_DATE'].strftime('%Y-%m-%d')
+            )
+        
+        # Price trend chart
+        st.subheader("Price Trends Over Time")
+        
+        # Prepare data for chart
+        chart_data = df.set_index('PULL_DATE')[['USD', 'USD_FOIL']].rename(columns={
+            'USD': 'Regular Price',
+            'USD_FOIL': 'Foil Price'
+        })
+        
+        # Remove rows where both prices are null
+        chart_data = chart_data.dropna(how='all')
+        
+        if not chart_data.empty:
+            st.line_chart(chart_data)
+        else:
+            st.warning("No price data available for charting.")
+        
+        # Raw data table
+        with st.expander("📊 Price History Data"):
             # Format the dataframe for display
             display_df = df.copy()
             display_df['PULL_DATE'] = display_df['PULL_DATE'].dt.strftime('%Y-%m-%d')
@@ -152,37 +198,39 @@ if card_id:
             display_df['USD_FOIL'] = display_df['USD_FOIL'].apply(lambda x: f"${x:.2f}" if pd.notna(x) else "N/A")
             
             st.dataframe(display_df, use_container_width=True)
-            
-            # Summary statistics
-            st.subheader("Price Statistics")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.write("**Regular Card Statistics:**")
-                regular_prices = df['USD'].dropna()
-                if not regular_prices.empty:
-                    st.write(f"- Average: ${regular_prices.mean():.2f}")
-                    st.write(f"- Minimum: ${regular_prices.min():.2f}")
-                    st.write(f"- Maximum: ${regular_prices.max():.2f}")
-                else:
-                    st.write("No regular price data available")
-            
-            with col2:
-                st.write("**Foil Card Statistics:**")
-                foil_prices = df['USD_FOIL'].dropna()
-                if not foil_prices.empty:
-                    st.write(f"- Average: ${foil_prices.mean():.2f}")
-                    st.write(f"- Minimum: ${foil_prices.min():.2f}")
-                    st.write(f"- Maximum: ${foil_prices.max():.2f}")
-                else:
-                    st.write("No foil price data available")
         
-        else:
-            st.warning("No data found for this card ID.")
-            
-    except Exception as e:
-        st.error(f"Error querying data: {str(e)}")
-        st.write("Please check that the card ID is valid and the function exists.")
+        # Summary statistics
+        st.subheader("Price Statistics")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**Regular Card Statistics:**")
+            regular_prices = df['USD'].dropna()
+            if not regular_prices.empty:
+                st.write(f"- Average: ${regular_prices.mean():.2f}")
+                st.write(f"- Minimum: ${regular_prices.min():.2f}")
+                st.write(f"- Maximum: ${regular_prices.max():.2f}")
+                st.write(f"- Data Points: {len(regular_prices)}")
+            else:
+                st.write("No regular price data available")
+        
+        with col2:
+            st.write("**Foil Card Statistics:**")
+            foil_prices = df['USD_FOIL'].dropna()
+            if not foil_prices.empty:
+                st.write(f"- Average: ${foil_prices.mean():.2f}")
+                st.write(f"- Minimum: ${foil_prices.min():.2f}")
+                st.write(f"- Maximum: ${foil_prices.max():.2f}")
+                st.write(f"- Data Points: {len(foil_prices)}")
+            else:
+                st.write("No foil price data available")
+    
+    else:
+        st.warning("No data found for this card ID.")
 
 else:
     st.info("Please enter a card ID to view price data.")
+
+# Footer with cache info
+st.markdown("---")
+st.caption("💡 Data cached for 24 hours to minimize costs. Prices update once daily in the database.")
