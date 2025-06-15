@@ -1,8 +1,29 @@
 # Import python packages
 import streamlit as st
 from snowflake.snowpark.context import get_active_session
+from snowflake.snowpark import Session
 import pandas as pd
 
+try:
+    session = get_active_session()
+    st.success("Connected using active Snowflake session")
+except:
+    # Create session manually using secrets
+    try:
+        connection_parameters = {
+            "account": st.secrets["snowflake"]["account"],
+            "user": st.secrets["snowflake"]["user"],
+            "password": st.secrets["snowflake"]["password"],
+            "warehouse": st.secrets["snowflake"]["warehouse"],
+            "database": st.secrets["snowflake"]["database"],
+            "schema": st.secrets["snowflake"]["schema"]
+        }
+        session = Session.builder.configs(connection_parameters).create()
+        st.success("Connected to Snowflake using credentials")
+    except Exception as e:
+        st.error(f"Failed to connect to Snowflake: {e}")
+        st.stop()
+        
 # Write directly to the app
 st.title("MTG Card Price Tracker 🃏")
 st.write(
