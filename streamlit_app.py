@@ -5,6 +5,10 @@ from snowflake.snowpark import Session
 import pandas as pd
 import hashlib
 
+# Initialize session state for selected card ID
+if 'selected_card_id' not in st.session_state:
+    st.session_state.selected_card_id = "ecc1027a-8c07-44a0-bdde-fa2844cff694"
+
 # Create fresh Snowflake session on-demand (no caching!)
 def get_snowflake_session():
     """Create fresh Snowflake session on-demand"""
@@ -133,11 +137,46 @@ if search_button or (search_term1 and search_term2):
     if not search_df.empty:
         st.write(f"Found {len(search_df)} cards:")
         
-        # Make the dataframe interactive - user can click to copy card ID
-        st.dataframe(search_df, use_container_width=True)
+        # Reorder columns for better display
+        column_order = [
+            'NAME', 'TCGPLAYER_URL', 'SET_NAME', 'ID', 
+            'AVG_PRICE', 'MIN_PRICE', 'MAX_PRICE', 
+            'AVG_FOIL_PRICE', 'MIN_FOIL_PRICE', 'MAX_FOIL_PRICE', 
+            'PRICE_RECORDS_COUNT'
+        ]
         
-        # Show instruction for copying card ID
-        st.info("💡 Copy a card ID from the table above to use in the price tracker below")
+        # Reorder the dataframe columns
+        search_df_ordered = search_df[column_order]
+        
+        # Configure column display with clickable URLs
+        column_config = {
+            "TCGPLAYER_URL": st.column_config.LinkColumn(
+                "TCGPlayer Link",
+                help="Click to open card page on TCGPlayer",
+                display_text="View on TCGPlayer"
+            )
+        }
+        
+        # Make the dataframe interactive with clickable URLs and selection
+        event = st.dataframe(
+            search_df_ordered, 
+            use_container_width=True,
+            column_config=column_config,
+            on_select="rerun",
+            selection_mode="single-row"
+        )
+        
+        # Handle row selection to populate card ID
+        if len(event.selection.rows) > 0:
+            selected_row = event.selection.rows[0]
+            selected_card_id = search_df_ordered.iloc[selected_row]['ID']
+            if st.session_state.selected_card_id != selected_card_id:
+                st.session_state.selected_card_id = selected_card_id
+                st.success(f"✅ Selected card ID: {selected_card_id}")
+                st.rerun()
+        
+        # Show instruction for selecting cards
+        st.info("💡 Click on any row to select that card for price tracking below")
     else:
         st.warning("No cards found matching your search terms.")
 
@@ -146,12 +185,17 @@ st.divider()  # Visual separator
 # Price Tracking Section
 st.subheader("📈 Card Price Tracker")
 
-# Card ID input (you can make this dynamic later)
+# Card ID input - now uses session state for selected card
 card_id = st.text_input(
     "Card ID", 
-    value="ecc1027a-8c07-44a0-bdde-fa2844cff694",
-    help="Enter the card UUID to track price history (use search above to find card IDs)"
+    value=st.session_state.selected_card_id,
+    key="card_id_input",
+    help="Enter the card UUID to track price history (or select from search above)"
 )
+
+# Update session state if user manually types in the input
+if card_id != st.session_state.selected_card_id:
+    st.session_state.selected_card_id = card_id
 
 if card_id:
     with st.spinner("Loading price data..."):
