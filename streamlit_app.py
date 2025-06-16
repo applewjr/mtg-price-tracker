@@ -103,7 +103,7 @@ st.write("Search for cards to get their UUID for price tracking")
 col1, col2 = st.columns(2)
 with col1:
     search_term1_raw = st.text_input(
-        "First search term", 
+        "Card Name", 
         value="vivi",
         help="Enter part of the card name"
     )
@@ -111,7 +111,7 @@ with col1:
 
 with col2:
     search_term2_raw = st.text_input(
-        "Second search term", 
+        "Set Name", 
         value="final fantasy",
         help="Enter additional search criteria"
     )
