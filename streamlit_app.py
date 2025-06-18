@@ -4,43 +4,58 @@ from snowflake.snowpark.context import get_active_session
 from snowflake.snowpark import Session
 import pandas as pd
 import hashlib
+import time
 
 # Initialize session state for selected card ID
 if 'selected_card_id' not in st.session_state:
     st.session_state.selected_card_id = "ecc1027a-8c07-44a0-bdde-fa2844cff694"
 
-# Create fresh Snowflake session on-demand (no caching!)
+# Lazy connection - only connect when actually needed
 def get_snowflake_session():
-    """Create fresh Snowflake session on-demand"""
+    """Create fresh Snowflake session only when needed"""
     try:
         session = get_active_session()
+        # Test the connection with a simple query
+        session.sql("SELECT 1").collect()
         return session, "Connected using active Snowflake session"
     except:
         try:
             connection_parameters = {
                 "account": st.secrets["snowflake"]["account"],
-                "user": st.secrets["snowflake"]["user"],
+                "user": st.secrets["snowflake"]["user"], 
                 "password": st.secrets["snowflake"]["password"],
                 "warehouse": st.secrets["snowflake"]["warehouse"],
                 "database": st.secrets["snowflake"]["database"],
                 "schema": st.secrets["snowflake"]["schema"]
             }
             session = Session.builder.configs(connection_parameters).create()
+            # Test the new connection
+            session.sql("SELECT 1").collect()
             return session, "Connected to Snowflake using credentials"
         except Exception as e:
             st.error(f"Failed to connect to Snowflake: {e}")
             st.stop()
 
+def execute_query_with_retry(query, max_retries=2):
+    """Execute query with automatic retry on connection failure"""
+    for attempt in range(max_retries + 1):
+        try:
+            session, _ = get_snowflake_session()
+            result = session.sql(query)
+            return result.to_pandas()
+        except Exception as e:
+            if attempt == max_retries:
+                st.error(f"Query failed after {max_retries + 1} attempts: {str(e)}")
+                return pd.DataFrame()
+            time.sleep(1)
+
 # Cache card search results for 24 hours (card database is relatively static)
 @st.cache_data(ttl=86400)  # Cache for 24 hours
 def search_cards(search_term1, search_term2):
     """Search for cards and cache results"""
-    session, _ = get_snowflake_session()
     try:
         search_query = f"SELECT * FROM TABLE(MTG_COST.PUBLIC.GET_CARD_ID('{search_term1}', '{search_term2}')) LIMIT 1000"
-        search_result = session.sql(search_query)
-        search_df = search_result.to_pandas()
-        return search_df
+        return execute_query_with_retry(search_query)
     except Exception as e:
         st.error(f"Error searching cards: {str(e)}")
         return pd.DataFrame()
@@ -49,12 +64,9 @@ def search_cards(search_term1, search_term2):
 @st.cache_data(ttl=86400)  # Cache for 24 hours
 def get_card_prices(card_id):
     """Get card price data and cache results"""
-    session, _ = get_snowflake_session()
     try:
         query = f"SELECT * FROM TABLE(MTG_COST.PUBLIC.GET_CARD_PRICES('{card_id}'))"
-        result = session.sql(query)
-        df = result.to_pandas()
-        return df
+        return execute_query_with_retry(query)
     except Exception as e:
         st.error(f"Error querying data: {str(e)}")
         return pd.DataFrame()
@@ -63,20 +75,13 @@ def get_card_prices(card_id):
 @st.cache_data(ttl=86400)  # Cache for 24 hours
 def get_price_after_launch():
     """Get price after launch data and cache results"""
-    session, _ = get_snowflake_session()
     try:
         query = "SELECT * FROM price_after_launch"
-        result = session.sql(query)
-        df = result.to_pandas()
-        return df
+        return execute_query_with_retry(query)
     except Exception as e:
         st.error(f"Error querying price after launch data: {str(e)}")
         return pd.DataFrame()
 
-# Initialize session for display message
-session, connection_message = get_snowflake_session()
-st.success(connection_message)
-        
 # Write directly to the app
 st.title("MTG Card Price Tracker 🃏")
 st.write(
